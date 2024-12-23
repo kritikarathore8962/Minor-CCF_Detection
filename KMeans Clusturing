@@ -1,0 +1,96 @@
+# Import necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+import joblib
+
+# Load datasets
+train_df = pd.read_csv('/content/drive/MyDrive/Data Set/fraudTrain.csv')
+test_df = pd.read_csv('/content/drive/MyDrive/Data Set/fraudTest.csv')
+
+# Drop unnecessary columns
+cols_to_drop = ['Unnamed: 0', 'cc_num', 'first', 'last', 'street', 'trans_num']
+train_df = train_df.drop(columns=cols_to_drop)
+test_df = test_df.drop(columns=cols_to_drop)
+
+# Convert 'trans_date_trans_time' to datetime and extract features
+for df in [train_df, test_df]:
+    df['trans_date_trans_time'] = pd.to_datetime(df['trans_date_trans_time'])
+    df['hour'] = df['trans_date_trans_time'].dt.hour
+    df['day'] = df['trans_date_trans_time'].dt.day
+    df['month'] = df['trans_date_trans_time'].dt.month
+    df['year'] = df['trans_date_trans_time'].dt.year
+    df.drop(columns=['trans_date_trans_time'], inplace=True)
+
+# Convert 'dob' to age
+for df in [train_df, test_df]:
+    df['dob'] = pd.to_datetime(df['dob'], errors='coerce')  # Ensure valid datetime format
+    df['age'] = df['dob'].apply(lambda x: 2024 - x.year if pd.notnull(x) else np.nan)
+    df.drop(columns=['dob'], inplace=True)  # Drop original 'dob' column
+
+# Handle 'gender' (binary categorical variable)
+if 'gender' in train_df.columns:
+    gender_mapping = {'M': 0, 'F': 1}
+    train_df['gender'] = train_df['gender'].map(gender_mapping)
+    test_df['gender'] = test_df['gender'].map(gender_mapping)
+
+# One-hot encode 'city' and 'state'
+categorical_columns = ['merchant', 'category', 'job', 'city', 'state']
+for col in categorical_columns:
+    combined_categories = pd.concat([train_df[col], test_df[col]]).drop_duplicates().reset_index(drop=True)
+    category_mapping = {cat: idx for idx, cat in enumerate(combined_categories)}
+
+    train_df[col] = train_df[col].map(category_mapping)
+    test_df[col] = test_df[col].map(category_mapping)
+
+# Fill missing values after mapping unseen categories
+train_df.fillna(-1, inplace=True)
+test_df.fillna(-1, inplace=True)
+
+# Double-check for any remaining non-numeric columns
+if not train_df.select_dtypes(include=['object']).empty:
+    print("Non-numeric columns in train set:", train_df.select_dtypes(include=['object']).columns)
+if not test_df.select_dtypes(include=['object']).empty:
+    print("Non-numeric columns in test set:", test_df.select_dtypes(include=['object']).columns)
+
+# Ensure there are no non-numeric columns before training
+assert train_df.select_dtypes(include=['object']).empty, "Train set still contains non-numeric columns!"
+assert test_df.select_dtypes(include=['object']).empty, "Test set still contains non-numeric columns!"
+
+# Separate features and target variable (no need for target variable in KMeans)
+X_train = train_df.drop('is_fraud', axis=1)
+X_test = test_df.drop('is_fraud', axis=1)
+
+# Train-Test Split for validation (no target variable, so this split is just for test/train purposes)
+X_train, X_val = train_test_split(X_train, test_size=0.2, random_state=42)
+
+# Initialize and train the KMeans model
+kmeans = KMeans(n_clusters=2, random_state=42)  # We choose 2 clusters as there are fraud and non-fraud transactions
+kmeans.fit(X_train)
+
+# Predict clusters (labels) for train, validation, and test sets
+y_train_pred = kmeans.predict(X_train)
+y_val_pred = kmeans.predict(X_val)
+y_test_pred = kmeans.predict(X_test)
+
+# Evaluate the clustering using silhouette score
+silhouette_train = silhouette_score(X_train, y_train_pred)
+silhouette_val = silhouette_score(X_val, y_val_pred)
+silhouette_test = silhouette_score(X_test, y_test_pred)
+
+print("Silhouette Score for Train Set:", silhouette_train)
+print("Silhouette Score for Validation Set:", silhouette_val)
+print("Silhouette Score for Test Set:", silhouette_test)
+
+# Visualize the clusters
+plt.scatter(X_train.iloc[:, 0], X_train.iloc[:, 1], c=y_train_pred, cmap='viridis')
+plt.title('KMeans Clustering of Training Data')
+plt.xlabel(X_train.columns[0])
+plt.ylabel(X_train.columns[1])
+plt.show()
+
+# Save the model (optional)
+joblib.dump(kmeans, 'fraud_detection_kmeans_model.pkl')
