@@ -1,0 +1,184 @@
+# Import necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import IsolationForest
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve, precision_recall_curve, accuracy_score
+import joblib
+
+# Load datasets
+train_df = pd.read_csv('/content/drive/MyDrive/DataSets/fraudTrain.csv')
+test_df = pd.read_csv('/content/drive/MyDrive/DataSets/fraudTest.csv')
+
+# Drop unnecessary columns
+cols_to_drop = ['Unnamed: 0', 'cc_num', 'first', 'last', 'street', 'trans_num']
+train_df = train_df.drop(columns=cols_to_drop)
+test_df = test_df.drop(columns=cols_to_drop)
+
+# Convert 'trans_date_trans_time' to datetime and extract features
+for df in [train_df, test_df]:
+    df['trans_date_trans_time'] = pd.to_datetime(df['trans_date_trans_time'])
+    df['hour'] = df['trans_date_trans_time'].dt.hour
+    df['day'] = df['trans_date_trans_time'].dt.day
+    df['month'] = df['trans_date_trans_time'].dt.month
+    df['year'] = df['trans_date_trans_time'].dt.year
+    df.drop(columns=['trans_date_trans_time'], inplace=True)
+
+# Convert 'dob' to age
+for df in [train_df, test_df]:
+    df['dob'] = pd.to_datetime(df['dob'], errors='coerce')
+    df['age'] = df['dob'].apply(lambda x: 2024 - x.year if pd.notnull(x) else np.nan)
+    df.drop(columns=['dob'], inplace=True)
+
+# Handle 'gender' (binary categorical variable)
+if 'gender' in train_df.columns:
+    gender_mapping = {'M': 0, 'F': 1}
+    train_df['gender'] = train_df['gender'].map(gender_mapping)
+    test_df['gender'] = test_df['gender'].map(gender_mapping)
+
+# One-hot encode 'city' and 'state'
+categorical_columns = ['merchant', 'category', 'job', 'city', 'state']
+for col in categorical_columns:
+    combined_categories = pd.concat([train_df[col], test_df[col]]).drop_duplicates().reset_index(drop=True)
+    category_mapping = {cat: idx for idx, cat in enumerate(combined_categories)}
+    
+    train_df[col] = train_df[col].map(category_mapping)
+    test_df[col] = test_df[col].map(category_mapping)
+
+# Fill missing values after mapping unseen categories
+train_df.fillna(-1, inplace=True)
+test_df.fillna(-1, inplace=True)
+
+# Data visualization
+plt.figure(figsize=(10, 6))
+sns.countplot(x='is_fraud', data=train_df)
+plt.title('Fraud vs Non-Fraud Transactions')
+plt.show()
+
+plt.figure(figsize=(12, 8))
+sns.heatmap(train_df.corr(), annot=False, cmap='coolwarm', cbar=True)
+plt.title('Correlation Heatmap')
+plt.show()
+
+# Double-check for any remaining non-numeric columns
+if not train_df.select_dtypes(include=['object']).empty:
+    print("Non-numeric columns in train set:", train_df.select_dtypes(include=['object']).columns)
+if not test_df.select_dtypes(include=['object']).empty:
+    print("Non-numeric columns in test set:", test_df.select_dtypes(include=['object']).columns)
+
+# Ensure there are no non-numeric columns before training
+assert train_df.select_dtypes(include=['object']).empty, "Train set still contains non-numeric columns!"
+assert test_df.select_dtypes(include=['object']).empty, "Test set still contains non-numeric columns!"
+
+# Separate features and target variable
+X_train = train_df.drop('is_fraud', axis=1)
+y_train = train_df['is_fraud']
+X_test = test_df.drop('is_fraud', axis=1)
+y_test = test_df['is_fraud']
+
+# Train-Test Split for validation
+X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
+
+# Initialize and train the Isolation Forest model
+model = IsolationForest(random_state=42, n_estimators=100, contamination=0.1)
+model.fit(X_train)
+
+# Make predictions
+y_val_pred = model.predict(X_val)
+y_test_pred = model.predict(X_test)
+
+# The model labels outliers as -1 and inliers as 1, so we need to convert that to binary (fraud = 1, not fraud = 0)
+y_val_pred = np.where(y_val_pred == -1, 1, 0)
+y_test_pred = np.where(y_test_pred == -1, 1, 0)
+
+# Evaluate the model
+print("Validation Classification Report:")
+print(classification_report(y_val, y_val_pred))
+print("Validation Confusion Matrix:")
+conf_matrix = confusion_matrix(y_val, y_val_pred)
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+plt.title('Validation Confusion Matrix')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.show()
+
+# Test Classification Report
+print("Test Classification Report:")
+print(classification_report(y_test, y_test_pred))
+
+# Test Accuracy
+accuracy_test = accuracy_score(y_test, y_test_pred)
+print(f"Test Accuracy: {accuracy_test:.2f}")
+
+# Test Confusion Matrix
+print("Test Confusion Matrix:")
+conf_matrix_test = confusion_matrix(y_test, y_test_pred)
+sns.heatmap(conf_matrix_test, annot=True, fmt='d', cmap='Greens')
+plt.title('Test Confusion Matrix')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.show()
+
+# You can also calculate ROC-AUC by using the anomaly scores
+roc_auc_val = roc_auc_score(y_val, model.decision_function(X_val))
+roc_auc_test = roc_auc_score(y_test, model.decision_function(X_test))
+
+print("Validation ROC-AUC Score:", roc_auc_val)
+print("Test ROC-AUC Score:", roc_auc_test)
+
+# Plot ROC Curve for Validation
+fpr_val, tpr_val, _ = roc_curve(y_val, model.decision_function(X_val))
+plt.figure(figsize=(10, 6))
+plt.plot(fpr_val, tpr_val, label=f'Validation ROC-AUC: {roc_auc_val:.2f}')
+plt.plot([0, 1], [0, 1], linestyle='--', color='grey')
+plt.title('ROC Curve (Validation)')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.legend()
+plt.show()
+
+# Plot ROC Curve for Test
+fpr_test, tpr_test, _ = roc_curve(y_test, model.decision_function(X_test))
+plt.figure(figsize=(10, 6))
+plt.plot(fpr_test, tpr_test, label=f'Test ROC-AUC: {roc_auc_test:.2f}')
+plt.plot([0, 1], [0, 1], linestyle='--', color='grey')
+plt.title('ROC Curve (Test)')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.legend()
+plt.show()
+
+# Precision-Recall Curve for Validation
+precision_val, recall_val, _ = precision_recall_curve(y_val, model.decision_function(X_val))
+plt.figure(figsize=(10, 6))
+plt.plot(recall_val, precision_val, label='Validation Precision-Recall Curve')
+plt.title('Precision-Recall Curve (Validation)')
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.legend()
+plt.show()
+
+# Precision-Recall Curve for Test
+precision_test, recall_test, _ = precision_recall_curve(y_test, model.decision_function(X_test))
+plt.figure(figsize=(10, 6))
+plt.plot(recall_test, precision_test, label='Test Precision-Recall Curve')
+plt.title('Precision-Recall Curve (Test)')
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.legend()
+plt.show()
+
+# Feature importance visualization (for Random Forest, we could use feature_importances_ but for IsolationForest we use the average of the trees)
+# Visualizing the influence of features based on the mean feature importance
+feature_importances = np.mean([tree.feature_importances_ for tree in model.estimators_], axis=0)
+feature_importances = pd.Series(feature_importances, index=X_train.columns).sort_values(ascending=False)
+
+plt.figure(figsize=(12, 8))
+feature_importances[:20].plot(kind='barh')
+plt.title('Top 20 Feature Importances')
+plt.show()
+
+# Save the model (optional)
+joblib.dump(model, 'fraud_detection_isolation_forest_model.pkl')
